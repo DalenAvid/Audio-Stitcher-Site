@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Склейка аудио</title>
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, sans-serif; padding: 24px; background:#f3f4f6; color:#111827 }
+    .card { background:white; padding:18px; border-radius:12px; box-shadow:0 6px 18px rgba(15,23,42,0.06); margin-bottom:18px; }
+    label { display:block; margin:8px 0; font-weight:600 }
+    select, input, button { padding:10px; width:100%; max-width:540px; border-radius:8px; border:1px solid #e5e7eb; }
+    button { background:#2563eb; color:white; cursor:pointer; border:none }
+    .muted { color:#6b7280; }
+    #timeline { margin-top:12px; display:flex; gap:8px; }
+    .segment { background:#f3f4f6; padding:8px 10px; border-radius:8px; flex:1; text-align:center; font-size:14px }
+    audio { width:100%; max-width:560px }
+  </style>
+</head>
+<body>
+  <h1>Склейка аудио</h1>
+
+  <div class="card">
+    <label>Загрузить собственный аудио-комплект (1,3,5) — опционально</label>
+    <input type="file" id="custom1" accept="audio/*" />
+    <input type="file" id="custom3" accept="audio/*" />
+    <input type="file" id="custom5" accept="audio/*" />
+    <div style="height:8px"></div>
+    <button id="applySet">Применить набор</button>
+    <p class="muted">Если не загружать — будут использованы файлы из корня сайта (raif_1.mp3 и т.д.).</p>
+  </div>
+
+  <div class="card">
+    <label for="variant">Выберите вариант:</label>
+    <select id="variant">
+      <option value="raif">Райфайзен</option>
+      <option value="sber">Сбер</option>
+      <option value="alfa">Альфа</option>
+      <option value="custom">Мой набор</option>
+    </select>
+  </div>
+
+  <div id="defaultAudios" class="card"></div>
+
+  <div class="card">
+    <label>Ваши аудио (2-й и 4-й):</label>
+    <input type="file" id="userAudio2" accept="audio/*" />
+    <input type="file" id="userAudio4" accept="audio/*" />
+  </div>
+
+  <div class="card">
+    <label>Текст (для метаданных/названия):</label>
+    <input type="text" id="textInput" placeholder="Введите текст" />
+  </div>
+
+  <div class="card">
+    <button id="renderBtn">Склеить</button>
+    <div id="timeline"></div>
+  </div>
+
+  <div class="card">
+    <h2>Результат</h2>
+    <audio id="resultAudio" controls></audio>
+    <div style="height:8px"></div>
+    <button id="downloadBtn" style="display:none">Скачать</button>
+  </div>
+
+  <script>
+    // === Конфигурация — файлы по умолчанию (должны быть в корне сайта) ===
+    const defaultSets = {
+      raif: ["raif_1.mp3", "raif_3.mp3", "raif_5.mp3"],
+      sber: ["sber_1.mp3", "sber_3.mp3", "sber_5.mp3"],
+      alfa: ["alfa_1.mp3", "alfa_3.mp3", "alfa_5.mp3"],
+      custom: [null, null, null]
+    };
+
+    const variantSelect = document.getElementById('variant');
+    const defaultAudios = document.getElementById('defaultAudios');
+    const timeline = document.getElementById('timeline');
+
+    function renderDefault() {
+      const v = variantSelect.value;
+      defaultAudios.innerHTML = '<h3>Аудио по умолчанию</h3>';
+      (defaultSets[v] || []).forEach((f, i) => {
+        defaultAudios.innerHTML += `<div>${i+1}) ${f ? f : '— Ваш файл (будет использоваться набор)'}</div>`;
+      });
+    }
+    variantSelect.addEventListener('change', renderDefault);
+    renderDefault();
+
+    document.getElementById('applySet').addEventListener('click', ()=>{
+      const f1 = document.getElementById('custom1').files[0];
+      const f3 = document.getElementById('custom3').files[0];
+      const f5 = document.getElementById('custom5').files[0];
+      if (!f1 || !f3 || !f5) return alert('Загрузите 3 файла для набора.');
+      defaultSets.custom = [f1, f3, f5];
+      variantSelect.value = 'custom';
+      renderDefault();
+    });
+
+    function updateTimeline(){
+      timeline.innerHTML = '';
+      ['1 (по умолч.)','2 (ваш)','3 (по умолч.)','4 (ваш)','5 (по умолч.)'].forEach(t=>{
+        const d = document.createElement('div'); d.className='segment'; d.innerText = t; timeline.appendChild(d);
+      });
+    }
+    updateTimeline();
+
+    async function fileToArrayBuffer(file){
+      return new Promise((resolve, reject)=>{
+        if (!file) return reject(new Error('Not a file'));
+        const r = new FileReader();
+        r.onload = ()=>resolve(r.result);
+        r.onerror = ()=>reject(r.error);
+        r.readAsArrayBuffer(file);
+      });
+    }
+
+    async function loadAudioBuffer(ctx, src){
+      // src может быть File (при кастомном наборе) или строкой (путь на сервере)
+      if (!src) throw new Error('Аудио не задано');
+      if (src instanceof File) {
+        const arr = await fileToArrayBuffer(src);
+        return await ctx.decodeAudioData(arr);
+      }
+      // загрузка по HTTP (Netlify/локальный сервер/хостинг)
+      const resp = await fetch(src);
+      if (!resp.ok) throw new Error('Не удалось загрузить ' + src);
+      const arr = await resp.arrayBuffer();
+      return await ctx.decodeAudioData(arr);
+    }
+
+    // Основная логика склейки
+    document.getElementById('renderBtn').addEventListener('click', async ()=>{
+      try{
+        const v = variantSelect.value;
+        const [a1,a3,a5] = defaultSets[v];
+        const u2 = document.getElementById('userAudio2').files[0];
+        const u4 = document.getElementById('userAudio4').files[0];
+        if (!u2 || !u4) return alert('Загрузите 2-й и 4-й файлы.');
+
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+        // Загружаем пять буферов (1,2,3,4,5)
+        const buffers = [];
+        buffers.push(await loadAudioBuffer(ctx, a1));
+        buffers.push(await loadAudioBuffer(ctx, u2));
+        buffers.push(await loadAudioBuffer(ctx, a3));
+        buffers.push(await loadAudioBuffer(ctx, u4));
+        buffers.push(await loadAudioBuffer(ctx, a5));
+
+        // вычисляем суммарную длину в сэмплах
+        const sampleRate = ctx.sampleRate;
+        const totalSamples = buffers.reduce((acc,b)=>acc + b.length, 0);
+        const out = ctx.createBuffer(2, totalSamples, sampleRate);
+
+        // сливаем буферы, заботимся о каналах
+        let offset = 0;
+        for (const b of buffers){
+          const inChannels = b.numberOfChannels;
+          for (let ch=0; ch<2; ch++){
+            const outData = out.getChannelData(ch);
+            const inData = b.getChannelData(inChannels===1 ? 0 : ch);
+            outData.set(inData, offset);
+          }
+          offset += b.length;
+        }
+
+        // Воспроизводим и записываем результат в Blob (wav)
+        const src = ctx.createBufferSource(); src.buffer = out;
+        const dest = ctx.createMediaStreamDestination(); src.connect(dest); src.start();
+
+        const recorder = new MediaRecorder(dest.stream);
+        const chunks = [];
+        recorder.ondataavailable = e=>chunks.push(e.data);
+        recorder.onstop = ()=>{
+          const blob = new Blob(chunks, {type: 'audio/webm'});
+          const url = URL.createObjectURL(blob);
+          document.getElementById('resultAudio').src = url;
+          const dl = document.getElementById('downloadBtn');
+          dl.style.display = 'inline-block';
+          dl.onclick = ()=>{
+            const a = document.createElement('a');
+            const name = document.getElementById('textInput').value.trim() || 'result';
+            a.href = url; a.download = name + '.webm'; a.click();
+          };
+        };
+
+        recorder.start();
+        // остановим запись через duration + 500ms запас
+        const duration = out.duration;
+        setTimeout(()=>recorder.stop(), duration*1000 + 600);
+
+      }catch(err){
+        alert('Ошибка: ' + (err && err.message ? err.message : err));
+        console.error(err);
+      }
+    });
+  </script>
+</body>
+</html>
