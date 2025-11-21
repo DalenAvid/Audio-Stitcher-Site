@@ -4,20 +4,31 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Склейка аудио</title>
+  <!-- Подключаем библиотеку для кодирования в MP3 -->
+  <script src="https://unpkg.com/lamejs@1.2.0/lame.min.js"></script>
   <style>
     body { font-family: Inter, system-ui, -apple-system, sans-serif; padding: 24px; background:#f3f4f6; color:#111827 }
     .card { background:white; padding:18px; border-radius:12px; box-shadow:0 6px 18px rgba(15,23,42,0.06); margin-bottom:18px; }
     label { display:block; margin:8px 0; font-weight:600 }
     select, input, button { padding:10px; width:100%; max-width:540px; border-radius:8px; border:1px solid #e5e7eb; }
     button { background:#2563eb; color:white; cursor:pointer; border:none }
+    button:disabled { background:#9ca3af; cursor:not-allowed; }
     .muted { color:#6b7280; }
     #timeline { margin-top:12px; display:flex; gap:8px; }
     .segment { background:#f3f4f6; padding:8px 10px; border-radius:8px; flex:1; text-align:center; font-size:14px }
     audio { width:100%; max-width:560px }
     .loading { display:none; margin-top:12px; }
-  .spinner { width:32px; height:32px; border:4px solid #d1d5db; border-top:4px solid #2563eb; border-radius:50%; animation:spin 0.8s linear infinite; margin:auto }
-  @keyframes spin { 100% { transform:rotate(360deg) } }
-</style>
+    .spinner { width:32px; height:32px; border:4px solid #d1d5db; border-top:4px solid #2563eb; border-radius:50%; animation:spin 0.8s linear infinite; margin:auto }
+    @keyframes spin { 100% { transform:rotate(360deg) } }
+    .progress-container { margin-top: 12px; }
+    .progress-bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
+    .progress { height: 100%; background: #2563eb; width: 0%; transition: width 0.3s; }
+    .progress-text { text-align: center; margin-top: 8px; font-size: 14px; }
+    .result-title { font-weight: 600; margin-bottom: 8px; }
+    .format-options { display: flex; gap: 12px; margin-top: 8px; }
+    .format-option { display: flex; align-items: center; gap: 6px; }
+    .variant-info { background: #eff6ff; padding: 8px 12px; border-radius: 6px; margin-top: 8px; font-size: 14px; }
+  </style>
 </head>
 <body>
   <h1>Склейка аудио</h1>
@@ -40,6 +51,7 @@
       <option value="alfa">Альфа</option>
       <option value="custom">Мой набор</option>
     </select>
+    <div class="variant-info" id="variantInfo">Выбран: Райфайзен</div>
   </div>
 
   <div id="defaultAudios" class="card"></div>
@@ -56,13 +68,37 @@
   </div>
 
   <div class="card">
+    <label>Формат сохранения:</label>
+    <div class="format-options">
+      <label class="format-option">
+        <input type="radio" name="format" value="mp3" checked> 
+        MP3 (меньший размер)
+      </label>
+      <label class="format-option">
+        <input type="radio" name="format" value="wav"> 
+        WAV (лучшее качество)
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
     <button id="renderBtn">Склеить</button>
     <div id="timeline"></div>
-    <div class="loading" id="loading"><div class="spinner"></div><p style="text-align:center;margin-top:8px">Обработка аудио...</p></div>
+    <div class="progress-container">
+      <div class="progress-bar">
+        <div class="progress" id="progressBar"></div>
+      </div>
+      <div class="progress-text" id="progressText">Готово к склейке</div>
+    </div>
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <p style="text-align:center;margin-top:8px">Обработка аудио...</p>
+    </div>
   </div>
 
   <div class="card">
     <h2>Результат</h2>
+    <div class="result-title" id="resultTitle"></div>
     <audio id="resultAudio" controls></audio>
     <div style="height:8px"></div>
     <button id="downloadBtn" style="display:none">Скачать</button>
@@ -77,17 +113,32 @@
       custom: [null, null, null]
     };
 
+    const variantNames = {
+      raif: "Райфайзен",
+      sber: "Сбер", 
+      alfa: "Альфа",
+      custom: "Мой набор"
+    };
+
     const variantSelect = document.getElementById('variant');
     const defaultAudios = document.getElementById('defaultAudios');
     const timeline = document.getElementById('timeline');
+    const progressBar = document.getElementById('progressBar');
+    const progressText = document.getElementById('progressText');
+    const resultTitle = document.getElementById('resultTitle');
+    const variantInfo = document.getElementById('variantInfo');
 
     function renderDefault() {
       const v = variantSelect.value;
+      const variantName = variantNames[v];
+      variantInfo.textContent = `Выбран: ${variantName}`;
+      
       defaultAudios.innerHTML = '<h3>Аудио по умолчанию</h3>';
       (defaultSets[v] || []).forEach((f, i) => {
         defaultAudios.innerHTML += `<div>${i+1}) ${f ? f : '— Ваш файл (будет использоваться набор)'}</div>`;
       });
     }
+    
     variantSelect.addEventListener('change', renderDefault);
     renderDefault();
 
@@ -109,6 +160,15 @@
     }
     updateTimeline();
 
+    function updateProgress(percent, text) {
+      progressBar.style.width = percent + '%';
+      progressText.textContent = text;
+    }
+
+    function getSelectedFormat() {
+      return document.querySelector('input[name="format"]:checked').value;
+    }
+
     async function fileToArrayBuffer(file){
       return new Promise((resolve, reject)=>{
         if (!file) return reject(new Error('Not a file'));
@@ -120,23 +180,113 @@
     }
 
     async function loadAudioBuffer(ctx, src){
-      // src может быть File (при кастомном наборе) или строкой (путь на сервере)
       if (!src) throw new Error('Аудио не задано');
       if (src instanceof File) {
         const arr = await fileToArrayBuffer(src);
         return await ctx.decodeAudioData(arr);
       }
-      // загрузка по HTTP (Netlify/локальный сервер/хостинг)
       const resp = await fetch(src);
       if (!resp.ok) throw new Error('Не удалось загрузить ' + src);
       const arr = await resp.arrayBuffer();
       return await ctx.decodeAudioData(arr);
     }
 
+    // Функция для кодирования в MP3
+    function encodeToMp3(audioBuffer) {
+      const leftChannel = audioBuffer.getChannelData(0);
+      const rightChannel = audioBuffer.numberOfChannels > 1 ? 
+        audioBuffer.getChannelData(1) : leftChannel;
+      
+      const sampleRate = audioBuffer.sampleRate;
+      const sampleBlockSize = 1152;
+      
+      const mp3encoder = new lamejs.Mp3Encoder(2, sampleRate, 128);
+      const mp3Data = [];
+      
+      // Float32 → Int16
+function floatTo16Bit(floatArray) {
+  const int16 = new Int16Array(floatArray.length);
+  for (let i = 0; i < floatArray.length; i++) {
+    let s = Math.max(-1, Math.min(1, floatArray[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return int16;
+}
+
+const left16 = floatTo16Bit(leftChannel);
+const right16 = floatTo16Bit(rightChannel);
+
+for (let i = 0; i < left16.length; i += sampleBlockSize) {
+  const leftChunk = left16.subarray(i, i + sampleBlockSize);
+  const rightChunk = right16.subarray(i, i + sampleBlockSize);
+
+  const mp3buf = mp3encoder.encodeBuffer(leftChunk, rightChunk);
+  if (mp3buf.length > 0) {
+    mp3Data.push(mp3buf);
+  }
+}
+
+      const mp3buf = mp3encoder.flush();
+      if (mp3buf.length > 0) {
+        mp3Data.push(new Int8Array(mp3buf));
+      }
+      
+      return new Blob(mp3Data, { type: 'audio/mp3' });
+    }
+
+    // Функция для создания WAV файла
+    function encodeToWav(audioBuffer) {
+      const numChannels = audioBuffer.numberOfChannels;
+      const length = audioBuffer.length;
+      const sampleRate = audioBuffer.sampleRate;
+      const bitsPerSample = 16;
+      const bytesPerSample = bitsPerSample / 8;
+      const blockAlign = numChannels * bytesPerSample;
+      const byteRate = sampleRate * blockAlign;
+      const dataSize = length * blockAlign;
+      
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+      
+      const writeString = (offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      };
+      
+      writeString(0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeString(8, 'WAVE');
+      writeString(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitsPerSample, true);
+      writeString(36, 'data');
+      view.setUint32(40, dataSize, true);
+      
+      let offset = 44;
+      for (let i = 0; i < length; i++) {
+        for (let channel = 0; channel < numChannels; channel++) {
+          const sample = Math.max(-1, Math.min(1, audioBuffer.getChannelData(channel)[i]));
+          view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+          offset += 2;
+        }
+      }
+      
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+
     // Основная логика склейки
     document.getElementById('renderBtn').addEventListener('click', async ()=>{
       const loading = document.getElementById('loading');
+      const renderBtn = document.getElementById('renderBtn');
       loading.style.display = 'block';
+      renderBtn.disabled = true;
+      
       try {
         const v = variantSelect.value;
         const [a1,a3,a5] = defaultSets[v];
@@ -145,18 +295,25 @@
         if (!u2 || !u4) {
           alert('Загрузите 2-й и 4-й файлы.');
           loading.style.display = 'none';
+          renderBtn.disabled = false;
           return;
         }
 
+        updateProgress(0, 'Загрузка аудио...');
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
 
         // Загружаем пять буферов (1,2,3,4,5)
         const buffers = [];
         buffers.push(await loadAudioBuffer(ctx, a1));
+        updateProgress(20, 'Загружен 1-й файл');
         buffers.push(await loadAudioBuffer(ctx, u2));
+        updateProgress(40, 'Загружен 2-й файл');
         buffers.push(await loadAudioBuffer(ctx, a3));
+        updateProgress(60, 'Загружен 3-й файл');
         buffers.push(await loadAudioBuffer(ctx, u4));
+        updateProgress(80, 'Загружен 4-й файл');
         buffers.push(await loadAudioBuffer(ctx, a5));
+        updateProgress(90, 'Загружен 5-й файл');
 
         // вычисляем суммарную длину в сэмплах
         const sampleRate = ctx.sampleRate;
@@ -175,36 +332,60 @@
           offset += b.length;
         }
 
-        // Воспроизводим и записываем результат в Blob (wav)
-        const src = ctx.createBufferSource(); src.buffer = out;
-        const dest = ctx.createMediaStreamDestination(); src.connect(dest); src.start();
+        updateProgress(95, 'Кодирование аудио...');
 
-        const recorder = new MediaRecorder(dest.stream);
-        const chunks = [];
-        recorder.ondataavailable = e=>chunks.push(e.data);
-        recorder.onstop = ()=>{
-          const blob = new Blob(chunks, {type: 'audio/webm'});
-          const url = URL.createObjectURL(blob);
-          document.getElementById('resultAudio').src = url;
-          const dl = document.getElementById('downloadBtn');
-          dl.style.display = 'inline-block';
-          dl.onclick = ()=>{
-            const a = document.createElement('a');
-            const name = document.getElementById('textInput').value.trim() || 'result';
-            a.href = url; a.download = name + '.webm'; a.click();
-          };
-          loading.style.display = 'none';
+        // Определяем формат и кодируем
+        const format = getSelectedFormat();
+        let audioBlob, fileExtension;
+        
+        if (format === 'mp3') {
+          audioBlob = encodeToMp3(out);
+          fileExtension = 'mp3';
+        } else {
+          audioBlob = encodeToWav(out);
+          fileExtension = 'wav';
+        }
+        
+        const url = URL.createObjectURL(audioBlob);
+        
+        // Создаем название с информацией о варианте и текстом
+        const userText = document.getElementById('textInput').value.trim();
+        const variantName = variantNames[v];
+        let title = userText || 'Склеенная запись';
+        
+        // Добавляем информацию о варианте, если текст пользователя не пустой
+        if (userText) {
+          title += ` (${variantName})`;
+        } else {
+          title = `${variantName} - ${title}`;
+        }
+        
+        resultTitle.textContent = title;
+        
+        // Воспроизводим результат
+        document.getElementById('resultAudio').src = url;
+        const dl = document.getElementById('downloadBtn');
+        dl.style.display = 'inline-block';
+        dl.textContent = `Скачать ${format.toUpperCase()}`;
+        dl.onclick = ()=>{
+          const a = document.createElement('a');
+          a.href = url; 
+          a.download = `${title}.${fileExtension}`; 
+          a.click();
         };
-
-        recorder.start();
-        // остановим запись через duration + 500ms запас
-        const duration = out.duration;
-        setTimeout(()=>recorder.stop(), duration*1000 + 600);
+        
+        updateProgress(100, 'Готово!');
+        setTimeout(() => {
+          loading.style.display = 'none';
+          renderBtn.disabled = false;
+        }, 1000);
 
       } catch(err) {
         alert('Ошибка: ' + (err && err.message ? err.message : err));
         console.error(err);
         loading.style.display = 'none';
+        renderBtn.disabled = false;
+        updateProgress(0, 'Ошибка при обработке');
       }
     });
   </script>
